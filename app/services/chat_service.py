@@ -33,6 +33,7 @@ async def create_conversation(
     persona_id: uuid.UUID,
     scenario_id: uuid.UUID,
     session: AsyncSession,
+    is_benchmark: bool = False,
 ) -> tuple[Conversation, Message]:
     """Create a new conversation and generate the AI's first greeting message."""
     from app.core.openai_client import chat_stream
@@ -50,12 +51,26 @@ async def create_conversation(
         user_id=user_id,
         persona_id=persona_id,
         scenario_id=scenario_id,
+        is_benchmark=is_benchmark,
     )
     session.add(conversation)
     await session.flush()
 
+    # Phase 3: 기억 컨텍스트 로드 (이전 대화에서 추출한 기억)
+    memory_context = None
+    try:
+        from app.services.memory_service import get_relevant_memories
+        context_text = f"{scenario.title} {scenario.situation} {scenario.goal}"
+        memories = await get_relevant_memories(
+            user_id, persona_id, context_text, session
+        )
+        if memories:
+            memory_context = [m.content for m in memories]
+    except Exception as e:
+        logger.warning("기억 로드 실패 (대화 생성은 계속): %s", e)
+
     # Generate AI first message (non-streaming for the greeting)
-    system_prompt = build_system_prompt(persona, scenario)
+    system_prompt = build_system_prompt(persona, scenario, memory_context=memory_context)
     greeting_parts = []
     async for chunk in chat_stream(
         system_prompt=system_prompt,
@@ -150,7 +165,22 @@ async def end_conversation(conversation_id: uuid.UUID, session: AsyncSession) ->
     await session.commit()
     await session.refresh(conv)
 
-    # 2. XP 부여 (대화 시간 + 힌트 패널티 고려)
+    # 2. Phase 3: 기억 추출 (대화 내용에서 유저 정보 추출 → 저장)
+    try:
+        from app.services.memory_service import extract_and_save
+        await extract_and_save(conversation_id, conv.user_id, conv.persona_id, session)
+    except Exception as e:
+        logger.warning("기억 추출 실패 (대화는 정상 종료): %s", e)
+
+    # 3. Phase 3: 벤치마크 모드 → 벤치마크 레코드 생성
+    if conv.is_benchmark:
+        try:
+            from app.services.benchmark_service import create_benchmark
+            await create_benchmark(conversation_id, conv.user_id, session)
+        except Exception as e:
+            logger.warning("벤치마크 생성 실패: %s", e)
+
+    # 4. XP 부여 (대화 시간 + 힌트 패널티 고려)
     xp_result = await award_xp(conv.user_id, conversation_id, session)
     logger.info(
         "XP awarded: conversation=%s, earned=%d, total=%d, level=%d, leveled_up=%s",

@@ -102,8 +102,37 @@ async def get_home_data(
             "estimated_minutes": scenario.estimated_minutes,
         })
 
+    # ─── Phase 3: 벤치마크 재도전 알림 (14일 경과 시나리오) ───
+    benchmark_reminders = []
+    try:
+        from app.services.benchmark_service import get_benchmark_reminders
+        benchmark_reminders = await get_benchmark_reminders(current_user.id, session)
+    except Exception:
+        pass  # 알림 실패해도 홈 데이터는 반환
+
+    # ─── Phase 3: 기억 기반 인사 (최근 대화 페르소나의 기억) ───
+    memory_greeting = None
+    if recent_rows:
+        try:
+            from app.services.memory_service import get_user_persona_memories
+            first_conv, first_persona = recent_rows[0]
+            memories = await get_user_persona_memories(
+                current_user.id, first_persona.id, session
+            )
+            if memories:
+                # 가장 최근 기억 1개를 인사말로 사용
+                memory_greeting = {
+                    "persona_name": first_persona.name,
+                    "persona_emoji": first_persona.icon_emoji,
+                    "memory_content": memories[0].content,
+                }
+        except Exception:
+            pass
+
     return {
         "user": user_data,
         "recent_conversations": recent_conversations,
         "recommended_scenarios": recommended_scenarios,
+        "benchmark_reminders": benchmark_reminders,
+        "memory_greeting": memory_greeting,
     }

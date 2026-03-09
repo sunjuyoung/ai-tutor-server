@@ -7,6 +7,8 @@ from pydantic import BaseModel
 class ConversationCreate(BaseModel):
     persona_id: uuid.UUID
     scenario_id: uuid.UUID
+    # Phase 3: 벤치마크 모드 (Before/After 비교용)
+    is_benchmark: bool = False
 
 
 class ConversationRead(BaseModel):

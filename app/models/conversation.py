@@ -16,4 +16,6 @@ class Conversation(SQLModel, table=True):
     duration_sec: int | None = None
     message_count: int = Field(default=0)
     hint_count: int = Field(default=0)
+    # Phase 3: 벤치마크 모드 여부 (Before/After 비교용)
+    is_benchmark: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)

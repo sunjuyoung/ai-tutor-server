@@ -21,4 +21,6 @@ class Persona(SQLModel, table=True):
     speech_style: str | None = Field(default=None, max_length=200)
     icon_emoji: str = Field(default="🤖", max_length=10)
     intro_line: str | None = Field(default=None, max_length=200)
+    # Phase 3.5: TTS 음성 (alloy|echo|fable|onyx|nova|shimmer)
+    tts_voice: str = Field(default="nova", max_length=20)
     created_at: datetime = Field(default_factory=datetime.utcnow)
