@@ -1,4 +1,13 @@
-"""Service for triggering and managing CrewAI correction analysis."""
+"""
+CrewAI 교정 분석 트리거 및 관리 서비스.
+
+대화 종료 후 비동기로 CrewAI 분석을 실행하고,
+결과를 DB + Redis에 저장한다.
+
+Phase 3.5 개선:
+- 대화의 언어/시나리오/난이도 메타데이터를 CrewAI에 전달
+- 메시지 포맷에 턴 번호 추가 (분석 정확도 향상)
+"""
 
 import json
 import logging
@@ -14,6 +23,8 @@ from app.crew.correction_crew import run_correction_analysis
 from app.models.conversation import Conversation
 from app.models.learning_analytics import LearningAnalytics
 from app.models.message import Message
+from app.models.persona import Persona
+from app.models.scenario import Scenario
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +32,23 @@ REPORT_CACHE_TTL = 86400  # 24 hours
 
 
 def _format_conversation_text(messages: list[Message]) -> str:
-    """Format messages into readable conversation text for CrewAI analysis."""
+    """
+    메시지를 CrewAI 분석용 텍스트로 포맷.
+
+    턴 번호를 붙여서 에이전트가 특정 발화를 참조하기 쉽게 한다.
+    예: [User #1] I want to order a coffee.
+        [AI #2] Sure! What kind of coffee would you like?
+    """
     lines = []
+    user_turn = 0
+    ai_turn = 0
     for msg in messages:
-        role_label = "[User]" if msg.role == "user" else "[AI]"
-        lines.append(f"{role_label} {msg.content}")
+        if msg.role == "user":
+            user_turn += 1
+            lines.append(f"[User #{user_turn}] {msg.content}")
+        else:
+            ai_turn += 1
+            lines.append(f"[AI #{ai_turn}] {msg.content}")
     return "\n".join(lines)
 
 
@@ -67,9 +90,47 @@ async def trigger_analysis(conversation_id: uuid.UUID, user_id: uuid.UUID) -> Le
             # 3. Format conversation text
             conversation_text = _format_conversation_text(messages)
 
-            # 4. Run CrewAI analysis (runs in thread pool internally)
-            logger.info("Starting CrewAI analysis for conversation %s", conversation_id)
-            report = await run_correction_analysis(conversation_text)
+            # 4. 대화의 언어/시나리오/난이도 메타데이터 로드
+            conv_stmt = select(Conversation).where(Conversation.id == conversation_id)
+            conv_result = await session.execute(conv_stmt)
+            conv = conv_result.scalar_one_or_none()
+
+            language = "en"
+            scenario_title = ""
+            scenario_goal = ""
+            difficulty = 1
+
+            if conv:
+                # 페르소나에서 언어 정보 가져오기
+                persona_result = await session.execute(
+                    select(Persona).where(Persona.id == conv.persona_id)
+                )
+                persona = persona_result.scalar_one_or_none()
+                if persona:
+                    language = persona.language
+
+                # 시나리오에서 제목/목표/난이도 가져오기
+                scenario_result = await session.execute(
+                    select(Scenario).where(Scenario.id == conv.scenario_id)
+                )
+                scenario = scenario_result.scalar_one_or_none()
+                if scenario:
+                    scenario_title = scenario.title or ""
+                    scenario_goal = scenario.goal or ""
+                    difficulty = scenario.difficulty
+
+            # 5. Run CrewAI analysis (runs in thread pool internally)
+            logger.info(
+                "Starting CrewAI analysis for conversation %s (language=%s, scenario=%s, difficulty=%d)",
+                conversation_id, language, scenario_title, difficulty,
+            )
+            report = await run_correction_analysis(
+                conversation_text,
+                language=language,
+                scenario_title=scenario_title,
+                scenario_goal=scenario_goal,
+                difficulty=difficulty,
+            )
             logger.info("CrewAI analysis completed for conversation %s", conversation_id)
 
             # 5. Update analytics record with results

@@ -10,6 +10,11 @@ CrewAI 교정 분석 크루 — 대화 종료 후 비동기 분석 파이프라�
 - Sequential Process: Fluency Agent가 Grammar/Expression 결과를 context로 참조해야 하므로 순차 실행
 - run_in_executor: CrewAI의 동기 kickoff()을 asyncio 이벤트루프를 차단하지 않고 실행
 - _parse_json_safe: LLM 출력이 순수 JSON이 아닐 수 있으므로 (마크다운 코드블록 등) 다중 파싱 전략 적용
+
+Phase 3.5 개선:
+- 언어(en/ja)에 따라 에이전트/태스크 프롬프트 분기
+- 시나리오 제목/목표를 태스크에 전달하여 맥락 기반 분석
+- 난이도(difficulty)에 따라 분석 깊이 조절
 """
 
 import asyncio
@@ -33,17 +38,48 @@ from app.schemas.report import CorrectionReport
 logger = logging.getLogger(__name__)
 
 
-def build_correction_crew(conversation_text: str, model: str = "openai/gpt-4o") -> Crew:
-    """Build a CrewAI crew for sequential conversation analysis."""
-    grammar_agent = create_grammar_agent(model)
-    expression_agent = create_expression_agent(model)
-    fluency_agent = create_fluency_agent(model)
+def build_correction_crew(
+    conversation_text: str,
+    model: str = "openai/gpt-4o",
+    language: str = "en",
+    scenario_title: str = "",
+    scenario_goal: str = "",
+    difficulty: int = 1,
+) -> Crew:
+    """
+    교정 분석 Crew 구성.
 
-    grammar_task = create_grammar_task(grammar_agent, conversation_text)
-    expression_task = create_expression_task(expression_agent, conversation_text)
-    fluency_task = create_fluency_task(fluency_agent, conversation_text)
+    Args:
+        conversation_text: [User]/[AI] 라벨이 붙은 대화 텍스트
+        model: CrewAI LLM 모델 ("provider/model" 형식)
+        language: 학습 언어 ("en" | "ja")
+        scenario_title: 시나리오 제목 (예: "카페에서 주문하기")
+        scenario_goal: 시나리오 학습 목표 (예: "음료 주문과 변경 요청 연습")
+        difficulty: 시나리오 난이도 (1~3)
+    """
+    # 언어별 에이전트 생성
+    grammar_agent = create_grammar_agent(model, language=language)
+    expression_agent = create_expression_agent(model, language=language)
+    fluency_agent = create_fluency_agent(model, language=language)
 
-    # Fluency task gets context from previous tasks
+    # 시나리오 컨텍스트를 포함한 태스크 생성
+    grammar_task = create_grammar_task(
+        grammar_agent, conversation_text,
+        language=language, scenario_title=scenario_title,
+        scenario_goal=scenario_goal, difficulty=difficulty,
+    )
+    expression_task = create_expression_task(
+        expression_agent, conversation_text,
+        language=language, scenario_title=scenario_title,
+        scenario_goal=scenario_goal, difficulty=difficulty,
+    )
+    fluency_task = create_fluency_task(
+        fluency_agent, conversation_text,
+        language=language, scenario_title=scenario_title,
+        scenario_goal=scenario_goal, difficulty=difficulty,
+    )
+
+    # Fluency task는 Grammar/Expression 결과를 context로 참조
     fluency_task.context = [grammar_task, expression_task]
 
     return Crew(
@@ -55,10 +91,24 @@ def build_correction_crew(conversation_text: str, model: str = "openai/gpt-4o") 
 
 
 async def run_correction_analysis(
-    conversation_text: str, model: str = "openai/gpt-4o"
+    conversation_text: str,
+    model: str = "openai/gpt-4o",
+    language: str = "en",
+    scenario_title: str = "",
+    scenario_goal: str = "",
+    difficulty: int = 1,
 ) -> CorrectionReport:
-    """Execute the correction crew asynchronously and return structured results."""
-    crew = build_correction_crew(conversation_text, model)
+    """
+    교정 분석 실행 + 결과 파싱.
+
+    CrewAI의 동기 kickoff()을 스레드풀에서 실행하여
+    asyncio 이벤트루프를 차단하지 않는다.
+    """
+    crew = build_correction_crew(
+        conversation_text, model,
+        language=language, scenario_title=scenario_title,
+        scenario_goal=scenario_goal, difficulty=difficulty,
+    )
 
     # Run synchronous CrewAI kickoff in thread pool to avoid blocking event loop
     loop = asyncio.get_event_loop()
@@ -86,7 +136,17 @@ async def run_correction_analysis(
 
 
 def _parse_json_safe(raw: str, default):
-    """Safely parse JSON from CrewAI agent output, handling markdown blocks."""
+    """
+    CrewAI 에이전트 출력에서 안전하게 JSON을 파싱.
+
+    LLM이 순수 JSON 외에 마크다운 코드블록이나 부가 텍스트를
+    포함할 수 있으므로 다중 파싱 전략을 적용한다.
+
+    파싱 순서:
+    1. 직접 JSON 파싱 시도
+    2. ```json 코드블록에서 추출
+    3. 텍스트 내 JSON 배열/객체 탐색
+    """
     if not raw:
         return default
 
