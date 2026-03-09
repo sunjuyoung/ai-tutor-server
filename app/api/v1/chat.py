@@ -9,7 +9,7 @@ from app.core.database import get_session
 from app.core.openai_client import chat_stream
 from app.core.security import get_current_user
 from app.models.user import User
-from app.schemas.chat import ConversationCreate, ConversationRead, MessageRead, SendMessageRequest
+from app.schemas.chat import ConversationCreate, ConversationDetailRead, ConversationRead, MessageRead, SendMessageRequest
 from app.services import chat_service
 from app.services.persona_service import build_system_prompt
 
@@ -29,6 +29,43 @@ async def create_conversation(
         session=session,
     )
     return conversation
+
+
+@router.get("/{conversation_id}", response_model=ConversationDetailRead)
+async def get_conversation(
+    conversation_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    대화 상세 조회 — 페르소나/시나리오 메타데이터 포함.
+
+    '대화 이어하기' 기능에서 사용. 기존 대화의 메타데이터(페르소나 이름/이모지,
+    시나리오 제목/이모지)를 반환하여 채팅 UI를 복원한다.
+    소유권이 다르거나 존재하지 않으면 404.
+    """
+    detail = await chat_service.get_conversation_detail(conversation_id, user.id, session)
+    if not detail:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return detail
+
+
+@router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    대화 삭제 — 메시지 + 분석결과 모두 Hard delete.
+
+    마이페이지에서 대화 삭제 시 호출. 소유권 검증 후
+    conversation + messages + learning_analytics를 모두 삭제한다.
+    """
+    deleted = await chat_service.delete_conversation(conversation_id, user.id, session)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return None
 
 
 @router.get("", response_model=list[ConversationRead])
@@ -89,10 +126,21 @@ async def send_message(
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@router.patch("/{conversation_id}/end", response_model=ConversationRead)
+@router.patch("/{conversation_id}/end")
 async def end_conversation(
     conversation_id: uuid.UUID,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
+    """
+    대화 종료 + 게이미피케이션 보상.
+
+    Returns:
+        {
+            "conversation_id": str,
+            "duration_sec": int,
+            "xp": { earned_xp, total_xp, level, leveled_up, xp_to_next },
+            "streak": { streak_days, streak_updated }
+        }
+    """
     return await chat_service.end_conversation(conversation_id, session)

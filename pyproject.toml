@@ -17,4 +17,5 @@ dependencies = [
     "openai>=1.60.0",
     "pydantic-settings>=2.7.0",
     "python-multipart>=0.0.18",
+    "crewai>=0.108.0",
 ]

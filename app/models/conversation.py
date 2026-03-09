@@ -15,4 +15,5 @@ class Conversation(SQLModel, table=True):
     ended_at: datetime | None = None
     duration_sec: int | None = None
     message_count: int = Field(default=0)
+    hint_count: int = Field(default=0)
     created_at: datetime = Field(default_factory=datetime.utcnow)

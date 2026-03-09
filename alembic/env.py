@@ -15,6 +15,7 @@ from app.models.persona import Persona  # noqa: F401
 from app.models.scenario import Scenario  # noqa: F401
 from app.models.conversation import Conversation  # noqa: F401
 from app.models.message import Message  # noqa: F401
+from app.models.learning_analytics import LearningAnalytics  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
